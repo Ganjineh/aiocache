@@ -2,6 +2,7 @@ import asyncio
 import functools
 import inspect
 import logging
+import random
 
 from aiocache.base import SENTINEL
 from aiocache.factory import Cache, caches
@@ -137,7 +138,9 @@ class cached:
         )
 
     async def get_from_cache(self, key):
-        for cache in self.cache:
+        temp_caches = self.cache.copy()
+        random.shuffle(temp_caches)
+        for cache in temp_caches:
             try:
                 value = await cache.get(key)
                 return value
@@ -146,9 +149,12 @@ class cached:
         logger.exception("Couldn't retrieve %s, unexpected error", key)
 
     async def set_in_cache(self, key, value):
-        for cache in self.cache:
+        temp_caches = self.cache.copy()
+        random.shuffle(temp_caches)
+        for cache in temp_caches:
             try:
-                await self.cache.set(key, value, ttl=self.ttl)
+                await cache.set(key, value, ttl=self.ttl)
+                return
             except Exception:
                 continue
         logger.exception("Couldn't set %s in key %s, unexpected error", value, key)
