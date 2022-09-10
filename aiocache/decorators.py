@@ -80,7 +80,9 @@ class cached:
 
     def __call__(self, f):
         if self.alias:
-            self.cache = caches.get(self.alias)
+            self.cache = []
+            for i in self.alias:
+                self.cache.append(caches.get(i))
         else:
             self.cache = _get_cache(
                 cache=self._cache,
@@ -135,17 +137,21 @@ class cached:
         )
 
     async def get_from_cache(self, key):
-        try:
-            value = await self.cache.get(key)
-            return value
-        except Exception:
-            logger.exception("Couldn't retrieve %s, unexpected error", key)
+        for cache in self.cache:
+            try:
+                value = await cache.get(key)
+                return value
+            except Exception:
+                continue
+        logger.exception("Couldn't retrieve %s, unexpected error", key)
 
     async def set_in_cache(self, key, value):
-        try:
-            await self.cache.set(key, value, ttl=self.ttl)
-        except Exception:
-            logger.exception("Couldn't set %s in key %s, unexpected error", value, key)
+        for cache in self.cache:
+            try:
+                await self.cache.set(key, value, ttl=self.ttl)
+            except Exception:
+                continue
+        logger.exception("Couldn't set %s in key %s, unexpected error", value, key)
 
 
 class cached_stampede(cached):
