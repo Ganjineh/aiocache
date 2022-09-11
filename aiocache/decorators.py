@@ -73,6 +73,7 @@ class cached:
         self.noself = noself
         self.alias = alias
         self.cache = None
+        self.last_used_cache = None
 
         self._cache = cache
         self._serializer = serializer
@@ -151,9 +152,16 @@ class cached:
     async def set_in_cache(self, key, value):
         temp_caches = self.cache.copy()
         random.shuffle(temp_caches)
+        if self.last_used_cache != None:
+            try:
+                await self.last_used_cache.set(key, value, ttl=self.ttl)
+                return
+            except Exception:
+                pass
         for cache in temp_caches:
             try:
                 await cache.set(key, value, ttl=self.ttl)
+                self.last_used_cache = cache
                 return
             except Exception:
                 continue
