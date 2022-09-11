@@ -150,6 +150,8 @@ class cached:
         logger.exception("Couldn't retrieve %s, unexpected error", key)
 
     async def set_in_cache(self, key, value):
+        if value[1] != 200:
+            return
         temp_caches = self.cache.copy()
         random.shuffle(temp_caches)
         if self.last_used_cache != None:
