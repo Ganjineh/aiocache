@@ -108,6 +108,7 @@ class cached:
         if cache_read:
             value = await self.get_from_cache(key)
             if value is not None:
+                value[1] = 226
                 return value
 
         result = await f(*args, **kwargs)
