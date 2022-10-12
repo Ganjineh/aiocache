@@ -147,7 +147,8 @@ class cached:
                 value = await cache.get(key)
                 return value
             except Exception:
-                continue
+                import traceback
+                traceback.print_exc()
         logger.exception("Couldn't retrieve %s, unexpected error", key)
 
     async def set_in_cache(self, key, value):
@@ -160,14 +161,16 @@ class cached:
                 await self.last_used_cache.set(key, value, ttl=self.ttl)
                 return
             except Exception:
-                pass
+                import traceback
+                traceback.print_exc()
         for cache in temp_caches:
             try:
                 await cache.set(key, value, ttl=self.ttl)
                 self.last_used_cache = cache
                 return
             except Exception:
-                continue
+                import traceback
+                traceback.print_exc()
         logger.exception("Couldn't set %s in key %s, unexpected error", value, key)
 
 
