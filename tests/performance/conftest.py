@@ -1,20 +1,25 @@
 import pytest
 
 from aiocache import Cache
-from aiocache.backends.redis import RedisBackend
 
-# TODO: Update aioredis and fix tests.
+
+# TODO:
+#  1. concurrency_error_rates test doesn't work as expected with redis-py,
+#  where both ConnectionPool and BlockingConnectionPool raise ConnectionError
+#  but don't wait for connection reuse when number of conns exceeds the limit.
+#  That's why pool in redis-py uses an unlimit number connections by default.
+#  So no HTTP req should fails in the concurrency_error_rates test with redis-py.
+#  2. On my local machine, test_memcached_getsetdel() fails, it doesn't reach
+#  the performance target.
 collect_ignore_glob = ["*"]
 
 
 @pytest.fixture
-def redis_cache(event_loop):
+def redis_cache():
+    # redis connection pool raises ConnectionError but doesn't wait for conn reuse
+    #  when exceeding max pool size.
     cache = Cache(Cache.REDIS, namespace="test", pool_max_size=1)
     yield cache
-
-    for _, pool in RedisBackend.pools.items():
-        pool.close()
-        event_loop.run_until_complete(pool.wait_closed())
 
 
 @pytest.fixture
