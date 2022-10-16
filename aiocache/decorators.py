@@ -145,6 +145,7 @@ class cached:
         for cache in temp_caches:
             try:
                 value = await cache.get(key)
+                await cache.close()
                 return value
             except Exception:
                 # import traceback
@@ -160,6 +161,7 @@ class cached:
         if self.last_used_cache != None:
             try:
                 await self.last_used_cache.set(key, value, ttl=self.ttl)
+                await cache.close()
                 return
             except Exception:
                 # import traceback
@@ -169,6 +171,7 @@ class cached:
             try:
                 await cache.set(key, value, ttl=self.ttl)
                 self.last_used_cache = cache
+                await cache.close()
                 return
             except Exception:
                 # import traceback
