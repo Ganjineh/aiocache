@@ -161,7 +161,7 @@ class cached:
         if self.last_used_cache != None:
             try:
                 await self.last_used_cache.set(key, value, ttl=self.ttl)
-                await cache.close()
+                await self.last_used_cache.close()
                 return
             except Exception:
                 # import traceback
