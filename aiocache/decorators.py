@@ -152,6 +152,7 @@ class cached:
                 # traceback.print_exc()
                 pass
         logger.exception("Couldn't retrieve %s, unexpected error", key)
+        return None
 
     async def set_in_cache(self, key, value):
         if type(value) == tuple and value[1] != 200:
@@ -237,7 +238,7 @@ class cached_stampede(cached):
 
 
 def _get_cache(cache=Cache.MEMORY, serializer=None, plugins=None, **cache_kwargs):
-    return cache(serializer=serializer, plugins=plugins, **cache_kwargs)
+    return Cache(cache, serializer=serializer, plugins=plugins, **cache_kwargs)
 
 
 def _get_args_dict(func, args, kwargs):

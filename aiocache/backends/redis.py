@@ -11,8 +11,7 @@ from aiocache.serializers import JsonSerializer
 _NOT_SET = object()
 
 
-class RedisBackend:
-
+class RedisBackend(BaseCache):
     RELEASE_SCRIPT = (
         "if redis.call('get',KEYS[1]) == ARGV[1] then"
         " return redis.call('del',KEYS[1])"
@@ -41,19 +40,13 @@ class RedisBackend:
         password=None,
         pool_min_size=_NOT_SET,
         pool_max_size=None,
-        loop=None,
         create_connection_timeout=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
-        if loop is not None:
-            warnings.warn(
-                "Parameter 'loop' has been obsolete on aiocache >= 0.12.0",
-                DeprecationWarning,
-            )
         if pool_min_size is not _NOT_SET:
             warnings.warn(
-                "Parameter 'pool_min_size' has been obsolete since aiocache >= 0.12.0",
+                "Parameter 'pool_min_size' is deprecated since aiocache 0.12",
                 DeprecationWarning,
             )
 
@@ -61,34 +54,22 @@ class RedisBackend:
         self.port = int(port)
         self.db = int(db)
         self.password = password
-        # NOTE: In redis and aioredis 2.x, ConnectionPool raises ConnectionError
-        #  but doesn't wait for connection reuse when number of conns
-        #  exceeds the limit. While in aioredis 1.x, it waits asynchronously
-        #  via asyncio.Condition. So max pool size defaults to None in redis.
-        if pool_max_size is None:
-            self.pool_max_size = None
-        else:
-            self.pool_max_size = int(pool_max_size)
+        # TODO: Remove int() call some time after adding type annotations.
+        self.pool_max_size = None if pool_max_size is None else int(pool_max_size)
         self.create_connection_timeout = (
             float(create_connection_timeout) if create_connection_timeout else None
         )
 
-        redis_kwargs = {
-            "host": self.endpoint,
-            "port": self.port,
-            "db": self.db,
-            "password": self.password,
-            # NOTE: decoding can't be controlled on API level after switching to
-            #  redis, we need to disable decoding on global/connection level.
-            #  Cause some of the values are save as bytes directly, like pickle
-            #  serialized values, which may raise exc when decoded with 'utf-8'.
-            "decode_responses": False,
-            # parameter names are different
-            "socket_connect_timeout": self.create_connection_timeout,
-            "max_connections": self.pool_max_size,
-        }
-        self.client = redis.Redis(**redis_kwargs)
-        
+        # NOTE: decoding can't be controlled on API level after switching to
+        # redis, we need to disable decoding on global/connection level
+        # (decode_responses=False), because some of the values are saved as
+        # bytes directly, like pickle serialized values, which may raise an
+        # exception when decoded with 'utf-8'.
+        self.client = redis.Redis(host=self.endpoint, port=self.port, db=self.db,
+                                  password=self.password, decode_responses=False,
+                                  socket_connect_timeout=self.create_connection_timeout,
+                                  max_connections=self.pool_max_size)
+
     async def _get(self, key, encoding="utf-8", _conn=None):
         value = await self.client.get(key)
         if encoding is None or value is None:
@@ -99,13 +80,10 @@ class RedisBackend:
         return await self._get(key, encoding=encoding, _conn=_conn)
 
     async def _multi_get(self, keys, encoding="utf-8", _conn=None):
-        values = []
-        for value in await self.client.mget(*keys):
-            if encoding is None or value is None:
-                values.append(value)
-            else:
-                values.append(value.decode(encoding))
-        return values
+        values = await self.client.mget(*keys)
+        if encoding is None:
+            return values
+        return [v if v is None else v.decode(encoding) for v in values]
 
     async def _set(self, key, value, ttl=None, _cas_token=None, _conn=None):
         if _cas_token is not None:
@@ -118,15 +96,10 @@ class RedisBackend:
         return await self.client.setex(key, ttl, value)
 
     async def _cas(self, key, value, token, ttl=None, _conn=None):
-        args = [value, token]
+        args = ()
         if ttl is not None:
-            if isinstance(ttl, float):
-                args += ["PX", int(ttl * 1000)]
-            else:
-                args += ["EX", ttl]
-        args = [key] + args
-        res = await self._raw("eval", self.CAS_SCRIPT, 1, *args, _conn=_conn)
-        return res
+            args = ("PX", int(ttl * 1000)) if isinstance(ttl, float) else ("EX", ttl)
+        return await self._raw("eval", self.CAS_SCRIPT, 1, key, value, token, *args, _conn=_conn)
 
     async def _multi_set(self, pairs, ttl=None, _conn=None):
         ttl = ttl or 0
@@ -143,21 +116,17 @@ class RedisBackend:
     async def __multi_set_ttl(self, flattened, ttl):
         async with self.client.pipeline(transaction=True) as p:
             p.execute_command("MSET", *flattened)
-            if isinstance(ttl, float):
-                ttl = int(ttl * 1000)
-                for key in flattened[::2]:
-                    p.pexpire(key, time=ttl)
-            else:
-                for key in flattened[::2]:
-                    p.expire(key, time=ttl)
+            ttl, exp = (int(ttl * 1000), p.pexpire) if isinstance(ttl, float) else (ttl, p.expire)
+            for key in flattened[::2]:
+                exp(key, time=ttl)
             await p.execute()
 
     async def _add(self, key, value, ttl=None, _conn=None):
         kwargs = {"nx": True}
         if isinstance(ttl, float):
-            kwargs.update({"px": int(ttl * 1000)})
+            kwargs["px"] = int(ttl * 1000)
         else:
-            kwargs.update({"ex": ttl})
+            kwargs["ex"] = ttl
         was_set = await self.client.set(key, value, **kwargs)
         if not was_set:
             raise ValueError("Key {} already exists, use .set to update the value".format(key))
@@ -195,8 +164,8 @@ class RedisBackend:
         if encoding is not None:
             if command == "get" and value is not None:
                 value = value.decode(encoding)
-            elif command in ["keys", "mget"]:
-                value = [_.decode(encoding) if _ is not None else _ for _ in value]
+            elif command in {"keys", "mget"}:
+                value = [v if v is None else v.decode(encoding) for v in value]
         return value
 
     async def _redlock_release(self, key, value):
@@ -206,7 +175,7 @@ class RedisBackend:
         await self.client.close()
 
 
-class RedisCache(RedisBackend, BaseCache):
+class RedisCache(RedisBackend):
     """
     Redis cache implementation with the following components as defaults:
         - serializer: :class:`aiocache.serializers.JsonSerializer`
@@ -231,8 +200,7 @@ class RedisCache(RedisBackend, BaseCache):
     NAME = "redis"
 
     def __init__(self, serializer=None, **kwargs):
-        super().__init__(**kwargs)
-        self.serializer = serializer or JsonSerializer()
+        super().__init__(serializer=serializer or JsonSerializer(), **kwargs)
 
     @classmethod
     def parse_uri_path(cls, path):
@@ -251,10 +219,11 @@ class RedisCache(RedisBackend, BaseCache):
         return options
 
     def _build_key(self, key, namespace=None):
+        # TODO(PY311): Remove str()
         if namespace is not None:
-            return "{}{}{}".format(namespace, ":" if namespace else "", key)
+            return "{}{}{}".format(namespace, ":" if namespace else "", str(key))
         if self.namespace is not None:
-            return "{}{}{}".format(self.namespace, ":" if self.namespace else "", key)
+            return "{}{}{}".format(self.namespace, ":" if self.namespace else "", str(key))
         return key
 
     def __repr__(self):  # pragma: no cover

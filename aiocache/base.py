@@ -3,7 +3,8 @@ import functools
 import logging
 import os
 import time
-from typing import Callable, Set
+from types import TracebackType
+from typing import Callable, Optional, Set, Type
 
 from aiocache import serializers
 
@@ -198,6 +199,9 @@ class BaseCache:
         return value if value is not None else default
 
     async def _get(self, key, encoding, _conn=None):
+        raise NotImplementedError()
+
+    async def _gets(self, key, encoding="utf-8", _conn=None):
         raise NotImplementedError()
 
     @API.register
@@ -464,6 +468,9 @@ class BaseCache:
     async def _raw(self, command, *args, **kwargs):
         raise NotImplementedError()
 
+    async def _redlock_release(self, key, value):
+        raise NotImplementedError()
+
     @API.timeout
     async def close(self, *args, _conn=None, **kwargs):
         """
@@ -482,10 +489,14 @@ class BaseCache:
         pass
 
     def _build_key(self, key, namespace=None):
+        # TODO(PY311): Remove str() calls.
+        # str() is needed to ensure consistent results when using enums between
+        # Python 3.11+ and older releases due to changed __format__() method:
+        # https://docs.python.org/3/whatsnew/3.11.html#enum
         if namespace is not None:
-            return "{}{}".format(namespace, key)
+            return "{}{}".format(namespace, str(key))
         if self.namespace is not None:
-            return "{}{}".format(self.namespace, key)
+            return "{}{}".format(self.namespace, str(key))
         return key
 
     def _get_ttl(self, ttl):
@@ -499,6 +510,15 @@ class BaseCache:
 
     async def release_conn(self, conn):
         pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(
+        self, exc_type: Optional[Type[BaseException]],
+        exc: Optional[BaseException], tb: Optional[TracebackType]
+    ) -> None:
+        await self.close()
 
 
 class _Conn:

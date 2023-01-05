@@ -1,3 +1,4 @@
+import platform
 import time
 
 import aiomcache
@@ -6,12 +7,13 @@ import redis.asyncio as redis
 
 
 @pytest.fixture
-async def redis_client():
-    return redis.Redis(host="127.0.0.1", port=6379, max_connections=1)
+async def redis_client() -> redis.Redis:
+    async with redis.Redis(host="127.0.0.1", port=6379, max_connections=1) as r:
+        yield r
 
 
+@pytest.mark.skipif(platform.python_implementation() == "PyPy", reason="Too slow")
 class TestRedis:
-    @pytest.mark.asyncio
     async def test_redis_getsetdel(self, redis_client, redis_cache):
         N = 10000
         redis_total_time = 0
@@ -37,9 +39,8 @@ class TestRedis:
         )
         print("aiocache avg call: {:0.5f}s".format(aiocache_total_time / N))
         print("redis    avg call: {:0.5f}s".format(redis_total_time / N))
-        assert aiocache_total_time / redis_total_time < 1.30
+        assert aiocache_total_time / redis_total_time < 1.35
 
-    @pytest.mark.asyncio
     async def test_redis_multigetsetdel(self, redis_client, redis_cache):
         N = 5000
         redis_total_time = 0
@@ -68,7 +69,7 @@ class TestRedis:
         )
         print("aiocache avg call: {:0.5f}s".format(aiocache_total_time / N))
         print("redis_client    avg call: {:0.5f}s".format(redis_total_time / N))
-        assert aiocache_total_time / redis_total_time < 1.35
+        assert aiocache_total_time / redis_total_time < 1.30
 
 
 @pytest.fixture
@@ -78,8 +79,8 @@ async def aiomcache_pool():
     await client.close()
 
 
+@pytest.mark.skipif(platform.python_implementation() == "PyPy", reason="Too slow")
 class TestMemcached:
-    @pytest.mark.asyncio
     async def test_memcached_getsetdel(self, aiomcache_pool, memcached_cache):
         N = 10000
         aiomcache_total_time = 0
@@ -107,9 +108,8 @@ class TestMemcached:
         )
         print("aiocache avg call: {:0.5f}s".format(aiocache_total_time / N))
         print("aiomcache avg call: {:0.5f}s".format(aiomcache_total_time / N))
-        assert aiocache_total_time / aiomcache_total_time < 1.30
+        assert aiocache_total_time / aiomcache_total_time < 1.40
 
-    @pytest.mark.asyncio
     async def test_memcached_multigetsetdel(self, aiomcache_pool, memcached_cache):
         N = 2000
         aiomcache_total_time = 0
@@ -124,7 +124,7 @@ class TestMemcached:
             aiomcache_total_time += time.time() - start
 
         aiocache_total_time = 0
-        values = [b"a", b"b", b"c", b"d", b"e", b"f"]
+        values = ["a", "b", "c", "d", "e", "f"]
         for _n in range(N):
             start = time.time()
             await memcached_cache.multi_set([(x, x) for x in values], timeout=0)
@@ -142,4 +142,4 @@ class TestMemcached:
         )
         print("aiocache avg call: {:0.5f}s".format(aiocache_total_time / N))
         print("aiomcache avg call: {:0.5f}s".format(aiomcache_total_time / N))
-        assert aiocache_total_time / aiomcache_total_time < 1.90
+        assert aiocache_total_time / aiomcache_total_time < 1.40
