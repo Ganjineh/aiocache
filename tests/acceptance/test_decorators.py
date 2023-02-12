@@ -5,6 +5,7 @@ from unittest import mock
 import pytest
 
 from aiocache import cached, cached_stampede, multi_cached
+from aiocache.base import _ensure_key
 from ..utils import Keys
 
 
@@ -26,7 +27,7 @@ class TestCached:
         mocker.patch("aiocache.decorators._get_cache", autospec=True, return_value=cache)
 
     async def test_cached_ttl(self, cache):
-        @cached(ttl=2, key=Keys.KEY)
+        @cached(ttl=2, key_builder=lambda *args, **kw: Keys.KEY)
         async def fn():
             return str(random.randint(1, 50))
 
@@ -47,6 +48,55 @@ class TestCached:
 
         await fn("self", 1, 3)
         assert await cache.exists(build_key(fn, "self", 1, 3)) is True
+
+    @pytest.mark.parametrize("decorator", (cached, cached_stampede))
+    async def test_cached_skip_cache_func(self, cache, decorator):
+        @decorator(skip_cache_func=lambda r: r is None)
+        async def sk_func(x):
+            return x if x > 0 else None
+
+        arg = 1
+        res = await sk_func(arg)
+        assert res
+
+        key = decorator().get_cache_key(sk_func, args=(1,), kwargs={})
+
+        assert key
+        assert await cache.exists(key)
+        assert await cache.get(key) == res
+
+        arg = -1
+
+        await sk_func(arg)
+
+        key = decorator().get_cache_key(sk_func, args=(-1,), kwargs={})
+
+        assert key
+        assert not await cache.exists(key)
+
+    async def test_cached_without_namespace(self, cache):
+        """Default cache key is created when no namespace is provided"""
+        @cached(namespace=None)
+        async def fn():
+            return "1"
+
+        await fn()
+        decorator = cached(namespace=None)
+        key = decorator.get_cache_key(fn, args=(), kwargs={})
+        assert await cache.exists(key, namespace=None) is True
+
+    async def test_cached_with_namespace(self, cache):
+        """Cache key is prefixed with provided namespace"""
+        key_prefix = "test"
+
+        @cached(namespace=key_prefix)
+        async def ns_fn():
+            return "1"
+
+        await ns_fn()
+        decorator = cached(namespace=key_prefix)
+        key = decorator.get_cache_key(ns_fn, args=(), kwargs={})
+        assert await cache.exists(key, namespace=key_prefix) is True
 
 
 class TestCachedStampede:
@@ -113,17 +163,29 @@ class TestMultiCachedDecorator:
         assert await cache.exists(Keys.KEY) is True
 
     async def test_multi_cached_key_builder(self, cache):
-        # TODO(PY311): Remove str() calls
         def build_key(key, f, self, keys, market="ES"):
-            return "{}_{}_{}".format(f.__name__, str(key), market)
+            return "{}_{}_{}".format(f.__name__, _ensure_key(key), market)
 
         @multi_cached(keys_from_attr="keys", key_builder=build_key)
         async def fn(self, keys, market="ES"):
             return {Keys.KEY: 1, Keys.KEY_1: 2}
 
         await fn("self", keys=[Keys.KEY, Keys.KEY_1])
-        assert await cache.exists("fn_" + str(Keys.KEY) + "_ES") is True
-        assert await cache.exists("fn_" + str(Keys.KEY_1) + "_ES") is True
+        assert await cache.exists("fn_" + _ensure_key(Keys.KEY) + "_ES") is True
+        assert await cache.exists("fn_" + _ensure_key(Keys.KEY_1) + "_ES") is True
+
+    async def test_multi_cached_skip_keys(self, cache):
+        @multi_cached(keys_from_attr="keys", skip_cache_func=lambda _, v: v is None)
+        async def multi_sk_fn(keys, values):
+            return {k: v for k, v in zip(keys, values)}
+
+        res = await multi_sk_fn(keys=[Keys.KEY, Keys.KEY_1], values=[42, None])
+        assert res
+        assert Keys.KEY in res and Keys.KEY_1 in res
+
+        assert await cache.exists(Keys.KEY)
+        assert await cache.get(Keys.KEY) == res[Keys.KEY]
+        assert not await cache.exists(Keys.KEY_1)
 
     async def test_fn_with_args(self, cache):
         @multi_cached("keys")

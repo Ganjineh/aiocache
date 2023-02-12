@@ -39,22 +39,22 @@ class TestCached:
     def test_init(self):
         c = cached(
             ttl=1,
-            key="key",
-            key_builder="fn",
+            key_builder=lambda *args, **kw: "key",
             cache=SimpleMemoryCache,
             plugins=None,
             alias=None,
             noself=False,
             namespace="test",
+            unused_kwarg="unused",
         )
 
         assert c.ttl == 1
-        assert c.key == "key"
-        assert c.key_builder == "fn"
+        assert c.key_builder() == "key"
         assert c.cache is None
         assert c._cache == SimpleMemoryCache
         assert c._serializer is None
-        assert c._kwargs == {"namespace": "test"}
+        assert c._namespace == "test"
+        assert c._kwargs == {"unused_kwarg": "unused"}
 
     def test_fails_at_instantiation(self):
         with pytest.raises(TypeError):
@@ -74,8 +74,7 @@ class TestCached:
             assert c.cache is mock_cache
 
     def test_get_cache_key_with_key(self, decorator):
-        decorator.key = "key"
-        decorator.key_builder = "fn"
+        decorator.key_builder = lambda *args, **kw: "key"
         assert decorator.get_cache_key(stub, (1, 2), {"a": 1, "b": 2}) == "key"
 
     def test_get_cache_key_without_key_and_attr(self, decorator):
@@ -152,8 +151,8 @@ class TestCached:
 
     async def test_calls_fn_raises_exception(self, decorator, decorator_call):
         decorator.cache.get.return_value = None
-        stub.side_effect = Exception()
-        with pytest.raises(Exception):
+        stub.side_effect = Exception("foo")
+        with pytest.raises(Exception, match="foo"):
             assert await decorator_call()
 
     async def test_cache_write_waits_for_future(self, decorator, decorator_call):
@@ -256,23 +255,23 @@ class TestCachedStampede:
         c = cached_stampede(
             lease=3,
             ttl=1,
-            key="key",
-            key_builder="fn",
+            key_builder=lambda *args, **kw: "key",
             cache=SimpleMemoryCache,
             plugins=None,
             alias=None,
             noself=False,
             namespace="test",
+            unused_kwarg="unused",
         )
 
         assert c.ttl == 1
-        assert c.key == "key"
-        assert c.key_builder == "fn"
+        assert c.key_builder() == "key"
         assert c.cache is None
         assert c._cache == SimpleMemoryCache
         assert c._serializer is None
         assert c.lease == 3
-        assert c._kwargs == {"namespace": "test"}
+        assert c._namespace == "test"
+        assert c._kwargs == {"unused_kwarg": "unused"}
 
     async def test_calls_get_and_returns(self, decorator, decorator_call):
         decorator.cache.get.return_value = 1
@@ -285,8 +284,8 @@ class TestCachedStampede:
 
     async def test_calls_fn_raises_exception(self, decorator, decorator_call):
         decorator.cache.get.return_value = None
-        stub.side_effect = Exception()
-        with pytest.raises(Exception):
+        stub.side_effect = Exception("foo")
+        with pytest.raises(Exception, match="foo"):
             assert await decorator_call()
 
     async def test_calls_redlock(self, decorator, decorator_call):
@@ -355,6 +354,7 @@ class TestMultiCached:
             plugins=None,
             alias=None,
             namespace="test",
+            unused_kwarg="unused",
         )
 
         def f():
@@ -366,7 +366,8 @@ class TestMultiCached:
         assert mc.cache is None
         assert mc._cache == SimpleMemoryCache
         assert mc._serializer is None
-        assert mc._kwargs == {"namespace": "test"}
+        assert mc._namespace == "test"
+        assert mc._kwargs == {"unused_kwarg": "unused"}
 
     def test_fails_at_instantiation(self):
         with pytest.raises(TypeError):
@@ -389,26 +390,27 @@ class TestMultiCached:
 
     def test_get_cache_keys(self, decorator):
         keys = decorator.get_cache_keys(stub_dict, (), {"keys": ["a", "b"]})
-        assert keys == (["a", "b"], [], -1)
+        assert keys == (["a", "b"], ["a", "b"], [], -1)
 
     def test_get_cache_keys_empty_list(self, decorator):
-        assert decorator.get_cache_keys(stub_dict, (), {"keys": []}) == ([], [], -1)
+        assert decorator.get_cache_keys(stub_dict, (), {"keys": []}) == ([], [], [], -1)
 
     def test_get_cache_keys_missing_kwarg(self, decorator):
-        assert decorator.get_cache_keys(stub_dict, (), {}) == ([], [], -1)
+        assert decorator.get_cache_keys(stub_dict, (), {}) == ([], [], [], -1)
 
     def test_get_cache_keys_arg_key_from_attr(self, decorator):
         def fake(keys, a=1, b=2):
             """Dummy function."""
 
-        assert decorator.get_cache_keys(fake, (["a"]), {}) == (["a"], [["a"]], 0)
+        assert decorator.get_cache_keys(fake, (["a"],), {}) == (["a"], ["a"], [["a"]], 0)
 
     def test_get_cache_keys_with_none(self, decorator):
-        assert decorator.get_cache_keys(stub_dict, (), {"keys": None}) == ([], [], -1)
+        assert decorator.get_cache_keys(stub_dict, (), {"keys": None}) == ([], [], [], -1)
 
     def test_get_cache_keys_with_key_builder(self, decorator):
         decorator.key_builder = lambda key, *args, **kwargs: kwargs["market"] + "_" + key.upper()
         assert decorator.get_cache_keys(stub_dict, (), {"keys": ["a", "b"], "market": "ES"}) == (
+            ["a", "b"],
             ["ES_A", "ES_B"],
             [],
             -1,
@@ -490,8 +492,8 @@ class TestMultiCached:
 
     async def test_calls_fn_raises_exception(self, decorator, decorator_call):
         decorator.cache.multi_get.return_value = [None]
-        stub_dict.side_effect = Exception()
-        with pytest.raises(Exception):
+        stub_dict.side_effect = Exception("foo")
+        with pytest.raises(Exception, match="foo"):
             assert await decorator_call(keys=[])
 
     async def test_cache_read_disabled(self, decorator, decorator_call):
@@ -583,6 +585,16 @@ class TestMultiCached:
             """Second function."""
 
         assert foo.cache != bar.cache
+
+    async def test_key_builder(self):
+        @multi_cached("keys", key_builder=lambda key, _, keys: key + 1)
+        async def f(keys=None):
+            return {k: k * 3 for k in keys}
+
+        assert await f(keys=(1,)) == {1: 3}
+        cached_value = await f.cache.get(2)
+        assert cached_value == 3
+        assert not await f.cache.exists(1)
 
 
 def test_get_args_dict():
