@@ -7,8 +7,8 @@ import pytest
 from aiocache import caches
 from aiocache.backends.memcached import MemcachedCache
 from aiocache.backends.redis import RedisCache
-from aiocache.base import BaseCache
 from aiocache.plugins import BasePlugin
+from ..utils import AbstractBaseCache, ConcreteBaseCache
 
 if sys.version_info < (3, 8):
     # Missing AsyncMock on 3.7
@@ -29,14 +29,14 @@ def reset_caches():
 
 @pytest.fixture
 def mock_cache(mocker):
-    return create_autospec(BaseCache())
+    return create_autospec(ConcreteBaseCache())
 
 
 @pytest.fixture
 def mock_base_cache():
     """Return BaseCache instance with unimplemented methods mocked out."""
     plugin = create_autospec(BasePlugin, instance=True)
-    cache = BaseCache(timeout=0.002, plugins=(plugin,))
+    cache = ConcreteBaseCache(timeout=0.002, plugins=(plugin,))
     methods = ("_add", "_get", "_gets", "_set", "_multi_get", "_multi_set", "_delete",
                "_exists", "_increment", "_expire", "_clear", "_raw", "_close",
                "_redlock_release", "acquire_conn", "release_conn")
@@ -44,12 +44,19 @@ def mock_base_cache():
         for f in methods:
             stack.enter_context(patch.object(cache, f, autospec=True))
         stack.enter_context(patch.object(cache, "_serializer", autospec=True))
+        stack.enter_context(patch.object(cache, "build_key", cache._str_build_key))
         yield cache
 
 
 @pytest.fixture
+def abstract_base_cache():
+    return AbstractBaseCache()
+
+
+@pytest.fixture
 def base_cache():
-    return BaseCache()
+    cache = ConcreteBaseCache()
+    return cache
 
 
 @pytest.fixture

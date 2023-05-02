@@ -3,16 +3,22 @@ import functools
 import logging
 import os
 import time
+from abc import ABC, abstractmethod
 from enum import Enum
 from types import TracebackType
-from typing import Callable, Optional, Set, Type
+from typing import Callable, Generic, List, Optional, Set, TYPE_CHECKING, Type, TypeVar
 
-from aiocache import serializers
+from aiocache.serializers import StringSerializer
+
+if TYPE_CHECKING:  # pragma: no cover
+    from aiocache.plugins import BasePlugin
+    from aiocache.serializers import BaseSerializer
 
 
 logger = logging.getLogger(__name__)
 
 SENTINEL = object()
+CacheKeyType = TypeVar("CacheKeyType")
 
 
 class API:
@@ -87,7 +93,7 @@ class API:
         return _plugins
 
 
-class BaseCache:
+class BaseCache(Generic[CacheKeyType], ABC):
     """
     Base class that agregates the common logic for the different caches that may exist. Cache
     related available options are:
@@ -97,9 +103,9 @@ class BaseCache:
     :param plugins: list of :class:`aiocache.plugins.BasePlugin` derived classes. Default is empty
         list.
     :param namespace: string to use as default prefix for the key used in all operations of
-        the backend. Default is None
+        the backend. Default is an empty string, "".
     :param key_builder: alternative callable to build the key. Receives the key and the namespace
-        as params and should return something that can be used as key by the underlying backend.
+        as params and should return a string that can be used as a key by the underlying backend.
     :param timeout: int or float in seconds specifying maximum timeout for the operations to last.
         By default its 5. Use 0 or None if you want to disable it.
     :param ttl: int the expiration time in seconds to use as a default in all operations of
@@ -109,18 +115,22 @@ class BaseCache:
     NAME: str
 
     def __init__(
-        self, serializer=None, plugins=None, namespace=None, key_builder=None, timeout=5, ttl=None
+        self,
+        serializer: Optional["BaseSerializer"] = None,
+        plugins: Optional[List["BasePlugin"]] = None,
+        namespace: str = "",
+        key_builder: Callable[[str, str], str] = lambda k, ns: f"{ns}{k}",
+        timeout: Optional[float] = 5,
+        ttl: Optional[float] = None,
     ):
-        self.timeout = float(timeout) if timeout is not None else timeout
+        self.timeout = float(timeout) if timeout is not None else None
+        self.ttl = float(ttl) if ttl is not None else None
+
         self.namespace = namespace
-        self.ttl = float(ttl) if ttl is not None else ttl
-        self.build_key = key_builder or self._build_key
+        self._build_key = key_builder
 
-        self._serializer = None
-        self.serializer = serializer or serializers.StringSerializer()
-
-        self._plugins = None
-        self.plugins = plugins or []
+        self._serializer = serializer or StringSerializer()
+        self._plugins = plugins or []
 
     @property
     def serializer(self):
@@ -162,15 +172,15 @@ class BaseCache:
             - :class:`asyncio.TimeoutError` if it lasts more than self.timeout
         """
         start = time.monotonic()
-        dumps = dumps_fn or self._serializer.dumps
-        ns = namespace if namespace is not None else self.namespace
-        ns_key = self.build_key(key, namespace=ns)
+        dumps = dumps_fn or self.serializer.dumps
+        ns_key = self.build_key(key, namespace)
 
         await self._add(ns_key, dumps(value), ttl=self._get_ttl(ttl), _conn=_conn)
 
         logger.debug("ADD %s %s (%.4f)s", ns_key, True, time.monotonic() - start)
         return True
 
+    @abstractmethod
     async def _add(self, key, value, ttl, _conn=None):
         raise NotImplementedError()
 
@@ -192,18 +202,19 @@ class BaseCache:
         :raises: :class:`asyncio.TimeoutError` if it lasts more than self.timeout
         """
         start = time.monotonic()
-        loads = loads_fn or self._serializer.loads
-        ns = namespace if namespace is not None else self.namespace
-        ns_key = self.build_key(key, namespace=ns)
+        loads = loads_fn or self.serializer.loads
+        ns_key = self.build_key(key, namespace)
 
         value = loads(await self._get(ns_key, encoding=self.serializer.encoding, _conn=_conn))
 
         logger.debug("GET %s %s (%.4f)s", ns_key, value is not None, time.monotonic() - start)
         return value if value is not None else default
 
+    @abstractmethod
     async def _get(self, key, encoding, _conn=None):
         raise NotImplementedError()
 
+    @abstractmethod
     async def _gets(self, key, encoding="utf-8", _conn=None):
         raise NotImplementedError()
 
@@ -224,10 +235,9 @@ class BaseCache:
         :raises: :class:`asyncio.TimeoutError` if it lasts more than self.timeout
         """
         start = time.monotonic()
-        loads = loads_fn or self._serializer.loads
-        ns = namespace if namespace is not None else self.namespace
+        loads = loads_fn or self.serializer.loads
 
-        ns_keys = [self.build_key(key, namespace=ns) for key in keys]
+        ns_keys = [self.build_key(key, namespace) for key in keys]
         values = [
             loads(value)
             for value in await self._multi_get(
@@ -243,6 +253,7 @@ class BaseCache:
         )
         return values
 
+    @abstractmethod
     async def _multi_get(self, keys, encoding, _conn=None):
         raise NotImplementedError()
 
@@ -269,9 +280,8 @@ class BaseCache:
         :raises: :class:`asyncio.TimeoutError` if it lasts more than self.timeout
         """
         start = time.monotonic()
-        dumps = dumps_fn or self._serializer.dumps
-        ns = namespace if namespace is not None else self.namespace
-        ns_key = self.build_key(key, namespace=ns)
+        dumps = dumps_fn or self.serializer.dumps
+        ns_key = self.build_key(key, namespace)
 
         res = await self._set(
             ns_key, dumps(value), ttl=self._get_ttl(ttl), _cas_token=_cas_token, _conn=_conn
@@ -280,6 +290,7 @@ class BaseCache:
         logger.debug("SET %s %d (%.4f)s", ns_key, True, time.monotonic() - start)
         return res
 
+    @abstractmethod
     async def _set(self, key, value, ttl, _cas_token=None, _conn=None):
         raise NotImplementedError()
 
@@ -303,12 +314,11 @@ class BaseCache:
         :raises: :class:`asyncio.TimeoutError` if it lasts more than self.timeout
         """
         start = time.monotonic()
-        dumps = dumps_fn or self._serializer.dumps
-        ns = namespace if namespace is not None else self.namespace
+        dumps = dumps_fn or self.serializer.dumps
 
         tmp_pairs = []
         for key, value in pairs:
-            tmp_pairs.append((self.build_key(key, namespace=ns), dumps(value)))
+            tmp_pairs.append((self.build_key(key, namespace), dumps(value)))
 
         await self._multi_set(tmp_pairs, ttl=self._get_ttl(ttl), _conn=_conn)
 
@@ -320,6 +330,7 @@ class BaseCache:
         )
         return True
 
+    @abstractmethod
     async def _multi_set(self, pairs, ttl, _conn=None):
         raise NotImplementedError()
 
@@ -339,12 +350,12 @@ class BaseCache:
         :raises: :class:`asyncio.TimeoutError` if it lasts more than self.timeout
         """
         start = time.monotonic()
-        ns = namespace if namespace is not None else self.namespace
-        ns_key = self.build_key(key, namespace=ns)
+        ns_key = self.build_key(key, namespace)
         ret = await self._delete(ns_key, _conn=_conn)
         logger.debug("DELETE %s %d (%.4f)s", ns_key, ret, time.monotonic() - start)
         return ret
 
+    @abstractmethod
     async def _delete(self, key, _conn=None):
         raise NotImplementedError()
 
@@ -364,12 +375,12 @@ class BaseCache:
         :raises: :class:`asyncio.TimeoutError` if it lasts more than self.timeout
         """
         start = time.monotonic()
-        ns = namespace if namespace is not None else self.namespace
-        ns_key = self.build_key(key, namespace=ns)
+        ns_key = self.build_key(key, namespace)
         ret = await self._exists(ns_key, _conn=_conn)
         logger.debug("EXISTS %s %d (%.4f)s", ns_key, ret, time.monotonic() - start)
         return ret
 
+    @abstractmethod
     async def _exists(self, key, _conn=None):
         raise NotImplementedError()
 
@@ -392,12 +403,12 @@ class BaseCache:
         :raises: :class:`TypeError` if value is not incrementable
         """
         start = time.monotonic()
-        ns = namespace if namespace is not None else self.namespace
-        ns_key = self.build_key(key, namespace=ns)
+        ns_key = self.build_key(key, namespace)
         ret = await self._increment(ns_key, delta, _conn=_conn)
         logger.debug("INCREMENT %s %d (%.4f)s", ns_key, ret, time.monotonic() - start)
         return ret
 
+    @abstractmethod
     async def _increment(self, key, delta, _conn=None):
         raise NotImplementedError()
 
@@ -418,12 +429,12 @@ class BaseCache:
         :raises: :class:`asyncio.TimeoutError` if it lasts more than self.timeout
         """
         start = time.monotonic()
-        ns = namespace if namespace is not None else self.namespace
-        ns_key = self.build_key(key, namespace=ns)
+        ns_key = self.build_key(key, namespace)
         ret = await self._expire(ns_key, ttl, _conn=_conn)
         logger.debug("EXPIRE %s %d (%.4f)s", ns_key, ret, time.monotonic() - start)
         return ret
 
+    @abstractmethod
     async def _expire(self, key, ttl, _conn=None):
         raise NotImplementedError()
 
@@ -447,6 +458,7 @@ class BaseCache:
         logger.debug("CLEAR %s %d (%.4f)s", namespace, ret, time.monotonic() - start)
         return ret
 
+    @abstractmethod
     async def _clear(self, namespace, _conn=None):
         raise NotImplementedError()
 
@@ -475,9 +487,11 @@ class BaseCache:
         logger.debug("%s (%.4f)s", command, time.monotonic() - start)
         return ret
 
+    @abstractmethod
     async def _raw(self, command, *args, **kwargs):
         raise NotImplementedError()
 
+    @abstractmethod
     async def _redlock_release(self, key, value):
         raise NotImplementedError()
 
@@ -498,12 +512,15 @@ class BaseCache:
     async def _close(self, *args, **kwargs):
         pass
 
-    def _build_key(self, key, namespace=None):
-        if namespace is not None:
-            return "{}{}".format(namespace, _ensure_key(key))
-        if self.namespace is not None:
-            return "{}{}".format(self.namespace, _ensure_key(key))
-        return key
+    @abstractmethod
+    def build_key(self, key: str, namespace: Optional[str] = None) -> CacheKeyType:
+        raise NotImplementedError()
+
+    def _str_build_key(self, key: str, namespace: Optional[str] = None) -> str:
+        """Simple key builder that can be used in subclasses for build_key()."""
+        key_name = key.value if isinstance(key, Enum) else key
+        ns = self.namespace if namespace is None else namespace
+        return self._build_key(key_name, ns)
 
     def _get_ttl(self, ttl):
         return ttl if ttl is not SENTINEL else self.ttl
@@ -548,13 +565,6 @@ class _Conn:
             return await getattr(self._cache, cmd_name)(*args, _conn=self._conn, **kwargs)
 
         return _do_inject_conn
-
-
-def _ensure_key(key):
-    if isinstance(key, Enum):
-        return key.value
-    else:
-        return key
 
 
 for cmd in API.CMDS:

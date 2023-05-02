@@ -36,7 +36,7 @@ class cached:
 
     :param ttl: int seconds to store the function call. Default is None which means no expiration.
     :param namespace: string to use as default prefix for the key used in all operations of
-        the backend. Default is None
+        the backend. Default is an empty string, "".
     :param key_builder: Callable that allows to build the function dynamically. It receives
         the function plus same args and kwargs passed to the function.
         This behavior is necessarily different than ``BaseCache.build_key()``
@@ -61,7 +61,7 @@ class cached:
     def __init__(
         self,
         ttl=SENTINEL,
-        namespace=None,
+        namespace="",
         key_builder=None,
         skip_cache_func=lambda x: False,
         cache=Cache.MEMORY,
@@ -206,7 +206,7 @@ class cached_stampede(cached):
     :param ttl: int seconds to store the function call. Default is None which means no expiration.
     :param key_from_attr: str arg or kwarg name from the function to use as a key.
     :param namespace: string to use as default prefix for the key used in all operations of
-        the backend. Default is None
+        the backend. Default is an empty string, "".
     :param key_builder: Callable that allows to build the function dynamically. It receives
         the function plus same args and kwargs passed to the function.
         This behavior is necessarily different than ``BaseCache.build_key()``
@@ -308,13 +308,13 @@ class multi_cached:
     :param keys_from_attr: name of the arg or kwarg in the decorated callable that contains
         an iterable that yields the keys returned by the decorated callable.
     :param namespace: string to use as default prefix for the key used in all operations of
-        the backend. Default is None
+        the backend. Default is an empty string, "".
     :param key_builder: Callable that enables mapping the decorated function's keys to the keys
         used by the cache. Receives a key from the iterable corresponding to
         ``keys_from_attr``, the decorated callable, and the positional and keyword arguments
         that were passed to the decorated callable. This behavior is necessarily different than
         ``BaseCache.build_key()`` and the call signature differs from ``cached.key_builder``.
-    :param skip_cache_keys: Callable that receives both key and value and returns True
+    :param skip_cache_func: Callable that receives both key and value and returns True
         if that key-value pair should not be cached (or False to store in cache).
         The keys and values to be passed are taken from the wrapped function result.
     :param ttl: int seconds to store the keys. Default is 0 which means no expiration.
@@ -333,7 +333,7 @@ class multi_cached:
     def __init__(
         self,
         keys_from_attr,
-        namespace=None,
+        namespace="",
         key_builder=None,
         skip_cache_func=lambda k, v: False,
         ttl=SENTINEL,
